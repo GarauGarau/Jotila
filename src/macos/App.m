@@ -164,7 +164,9 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     (void)sender; NSEvent *event=NSApp.currentEvent;
     if(event.type==NSEventTypeRightMouseUp || (event.modifierFlags&NSEventModifierFlagControl)) {
         [_trayClick invalidate]; [_tray popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,0) inView:_status.button];
-    } else if(event.clickCount>1) { [_trayClick invalidate]; [self browse:nil]; }
+    /* Accessibility/keyboard activation may have a non-mouse current event;
+       asking that event for clickCount raises an AppKit exception. */
+    } else if(event.type==NSEventTypeLeftMouseUp && event.clickCount>1) { [_trayClick invalidate]; [self browse:nil]; }
     else { [_trayClick invalidate]; __weak JNApp *weakSelf=self; _trayClick=[NSTimer scheduledTimerWithTimeInterval:NSEvent.doubleClickInterval repeats:NO block:^(NSTimer *timer) { (void)timer; [weakSelf recallNote:nil]; }]; }
 }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
