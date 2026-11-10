@@ -45,6 +45,7 @@
 #define CMD_TITLE 101
 #define CMD_BROWSE 102
 #define CMD_TAGS 103
+#define CMD_SCROLL 104
 #define CMD_OPACITY 200
 #define CMD_SIZE 300
 #define CMD_PALETTE 400
@@ -52,10 +53,10 @@
 typedef struct Note Note;
 enum {
     LAYOUT_X, LAYOUT_Y, LAYOUT_COLOR, LAYOUT_TITLE, LAYOUT_COLLAPSED, LAYOUT_OPEN,
-    LAYOUT_PALETTE, LAYOUT_SIZE, LAYOUT_OPACITY, LAYOUT_WIDTH, LAYOUT_HEIGHT, LAYOUT_CUSTOM_INK, LAYOUT_COUNT
+    LAYOUT_PALETTE, LAYOUT_SIZE, LAYOUT_OPACITY, LAYOUT_WIDTH, LAYOUT_HEIGHT, LAYOUT_CUSTOM_INK, LAYOUT_SCROLL, LAYOUT_COUNT
 };
 static const wchar_t *LAYOUT_KEYS[LAYOUT_COUNT] = {
-    L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height", L"custom_ink"
+    L"x", L"y", L"color", L"has_title", L"collapsed", L"open", L"palette", L"size", L"opacity", L"width", L"height", L"custom_ink", L"scroll"
 };
 struct Note {
     Note *next;
@@ -69,7 +70,7 @@ struct Note {
     size_t text_capacity;
     wchar_t id[80], path[PATH_CAP];
     int color, palette, size, opacity, dpi, hover, pressed;
-    int width, height, wheel_delta;
+    int width, height, wheel_delta, scroll_delta;
     SIZE text_extent;
     int saved_layout[LAYOUT_COUNT];
     unsigned dirty;
@@ -80,6 +81,7 @@ struct Note {
     CHARRANGE palette_selection, wheel_selection;
     BOOL custom_ink;
     BOOL collapsed, ready, tags_dirty, save_failed, validating, layout_saved, persisted, tracking;
+    BOOL edit_overflow, scrolling;
 };
 static const SIZE NOTE_SIZES[] = {{240,180}, {NOTE_WIDTH,NOTE_HEIGHT}, {420,340}, {540,440}, {300,300}};
 static const wchar_t *SIZE_NAMES[] = {L"Small", L"Medium", L"Large", L"Extra large", L"Square"};
@@ -89,6 +91,9 @@ static HINSTANCE instance;
 static HWND controller;
 static HICON app_icon;
 static Note *notes;
+/* Stable IDs survive closing a window; no pointer to a freed note is retained. */
+static wchar_t last_note[80], saved_last_note[80];
+static BOOL restoring_notes;
 static wchar_t directory[PATH_CAP], state_path[PATH_CAP];
 static wchar_t location_config[PATH_CAP];
 static UINT taskbar_created;
@@ -97,6 +102,7 @@ static int saved_next_color;
 static int current_palette;
 static int favorite_palette = -1;
 static BOOL shuffled_palette;
+static BOOL default_scrolling;
 static BYTE color_bag[COLOR_COUNT];
 static int colors_left;
 static DWORD color_random;
@@ -111,6 +117,10 @@ static HWND browse_notes(void);
 static void choose_archive(HWND owner);
 static void wheel_resize(Note *note, int delta);
 static void end_session(BOOL ending);
+
+static void remember_note(const Note *note) {
+    if (note->ready && !restoring_notes) wcscpy_s(last_note, 80, note->id);
+}
 
 static int scaled(const Note *note, int value) { return MulDiv(value, note->dpi, 96); }
 static int bar_height(const Note *note) { return scaled(note, 32); }
@@ -213,6 +223,7 @@ static BOOL save_layout(Note *note, BOOL open) {
     values[6] = note->palette; values[7] = note->size; values[8] = note->opacity;
     values[9] = MulDiv(note->width, 96, note->dpi); values[10] = MulDiv(note->height, 96, note->dpi);
     values[11] = note->custom_ink;
+    values[LAYOUT_SCROLL] = note->scrolling;
     for (i = 0; i < LAYOUT_COUNT; ++i)
         if (!note->layout_saved || values[i] != note->saved_layout[i]) { ++changed; last = i; }
     if (!changed) return TRUE;
@@ -644,6 +655,12 @@ static BOOL text_fits(Note *note) {
     return note->text_extent.cx <= rect.right && note->text_extent.cy <= rect.bottom;
 }
 
+/* Scrolling delegates layout and navigation to Rich Edit. Do not measure the
+   whole document on each keystroke when there is no viewport capacity limit. */
+static BOOL accepts_text(Note *note) {
+    return note->scrolling || text_fits(note);
+}
+
 static BOOL remember_text(Note *note) {
     int length = GetWindowTextLengthW(note->edit);
     if ((size_t)length + 1 > note->text_capacity) {
@@ -820,7 +837,7 @@ static void toggle_format(Note *note, DWORD effect) {
     SendMessageW(note->edit, EM_STOPGROUPTYPING, 0, 0);
     note->validating = TRUE;
     SendMessageW(note->edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&format);
-    if (!text_fits(note)) SendMessageW(note->edit, EM_UNDO, 0, 0);
+    if (!accepts_text(note)) SendMessageW(note->edit, EM_UNDO, 0, 0);
     note->validating = FALSE;
     mark_dirty(note, DIRTY_RICH);
 }
@@ -836,7 +853,7 @@ static void begin_edit(Note *note, CHARRANGE *selection) {
 
 static void finish_edit(Note *note, const CHARRANGE *selection) {
     note->document->lpVtbl->EndEditCollection(note->document);
-    if (!text_fits(note) || !remember_text(note)) {
+    if (!accepts_text(note) || !remember_text(note)) {
         SendMessageW(note->edit, EM_UNDO, 0, 0);
         SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)selection);
     } else mark_dirty(note, DIRTY_TEXT | DIRTY_RICH);
@@ -930,6 +947,27 @@ static BOOL remove_todo_marker(Note *note) {
     return TRUE;
 }
 
+static void scroll_text(Note *note, int delta) {
+    UINT lines = 3;
+    int steps;
+    note->scroll_delta += delta;
+    steps = note->scroll_delta / WHEEL_DELTA;
+    note->scroll_delta %= WHEEL_DELTA;
+    if (!steps) return;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    /* Rich Edit ignores wheel input without WS_VSCROLL. Send native scroll
+       commands instead, retaining the Windows preference and fractional input. */
+    if (lines == WHEEL_PAGESCROLL) {
+        while (steps) {
+            SendMessageW(note->edit, EM_SCROLL, steps > 0 ? SB_PAGEUP : SB_PAGEDOWN, 0);
+            steps += steps > 0 ? -1 : 1;
+        }
+    } else if (lines) {
+        LONGLONG count = -(LONGLONG)steps * lines;
+        SendMessageW(note->edit, EM_LINESCROLL, 0, (LPARAM)max((LONGLONG)LONG_MIN, min((LONGLONG)LONG_MAX, count)));
+    }
+}
+
 static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     Note *note = (Note *)GetWindowLongPtrW(GetParent(window), GWLP_USERDATA);
     /* Rich Edit normally moves the caret on right-down. Keep the selection
@@ -948,14 +986,22 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
     }
     if (note->ready && !note->validating && (message == WM_CHAR || message == WM_KEYDOWN ||
         message == WM_PASTE || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO ||
-        message == EM_REPLACESEL || message == WM_SETTEXT))
+        message == EM_PASTESPECIAL || message == EM_REPLACESEL || message == WM_SETTEXT))
     {
         SendMessageW(window, EM_GETSEL, (WPARAM)&note->selection_start, (LPARAM)&note->selection_end);
         /* An overflow rollback must not undo earlier accepted keystrokes. */
         if (message != WM_KEYDOWN) SendMessageW(window, EM_STOPGROUPTYPING, 0, 0);
     }
-    if (message == WM_MOUSEWHEEL && (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL))
-        return SendMessageW(note->window, message, wparam, lparam);
+    if (message == WM_MOUSEWHEEL) {
+        if (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) {
+            note->scroll_delta = 0;
+            return SendMessageW(note->window, message, wparam, lparam);
+        }
+        if (note->scrolling && note->ready && !note->validating) {
+            note->wheel_delta = 0;
+            scroll_text(note, GET_WHEEL_DELTA_WPARAM(wparam)); return 0;
+        }
+    }
     if (note->ready && !note->validating && (message == WM_UNDO || message == EM_UNDO || message == EM_REDO)) {
         CHARRANGE selection;
         UINT action = message == EM_REDO ? EM_REDO : EM_UNDO;
@@ -965,7 +1011,7 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
         result = CallWindowProcW(note->edit_proc, window, action, 0, 0);
         if (result) {
             unsigned changes = DIRTY_RICH | (editor_matches_text(note) ? 0 : DIRTY_TEXT);
-            if (!text_fits(note) || !remember_text(note)) {
+            if (!accepts_text(note) || !remember_text(note)) {
                 CallWindowProcW(note->edit_proc, window, action == EM_UNDO ? EM_REDO : EM_UNDO, 0, 0);
                 SendMessageW(window, EM_EXSETSEL, 0, (LPARAM)&selection);
                 result = FALSE;
@@ -997,7 +1043,24 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
          wparam == L'+' || wparam == L'-' || wparam == L'=' || wparam == 31 || wparam == 29 ||
          (wparam == 6 && GetKeyState(VK_SHIFT) < 0) ||
          (wparam == 24 && GetKeyState(VK_SHIFT) < 0))) return 0;
-    if (message == WM_PASTE) return SendMessageW(window, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
+    if (message == WM_PASTE) { message = EM_PASTESPECIAL; wparam = CF_UNICODETEXT; lparam = 0; }
+    if (note->ready && !note->validating &&
+        (message == EM_PASTESPECIAL ||
+         (message == WM_KEYDOWN && GetKeyState(VK_MENU) >= 0 &&
+          ((wparam == 'V' && GetKeyState(VK_CONTROL) < 0) ||
+           (wparam == VK_INSERT && GetKeyState(VK_SHIFT) < 0 && GetKeyState(VK_CONTROL) >= 0))) ||
+         (message == WM_CHAR && wparam == 22 && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0))) {
+        LRESULT result;
+        /* Native keyboard paste need not send WM_PASTE to the subclass.
+           Report only after EN_CHANGE has rolled back and the editor returns. */
+        note->edit_overflow = FALSE;
+        result = CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
+        if (note->edit_overflow)
+            MessageBoxW(note->window,
+                L"The pasted text does not fit in this note.\n\nEnlarge the note or paste less text. Your existing text has been kept.",
+                L"Jotilla", MB_OK | MB_ICONINFORMATION);
+        return result;
+    }
     if (message == WM_LBUTTONDOWN && note->ready && click_todo(note, lparam)) return 0;
     if (message == WM_KEYDOWN && wparam == VK_BACK && note->ready && remove_todo_marker(note)) return 0;
     if (message == WM_KEYDOWN && wparam == VK_RETURN && note->ready) {
@@ -1009,6 +1072,13 @@ static LRESULT CALLBACK edit_proc(HWND window, UINT message, WPARAM wparam, LPAR
        characters so Enter/Backspace cannot perform a second operation. */
     if (message == WM_CHAR && note->ready && (wparam == L'\r' || wparam == L'\n' || wparam == L'\b')) return 0;
     if (message == WM_KILLFOCUS && note->ready) save_note(note);
+    if (message == WM_KEYDOWN && note->ready && note->scrolling && wparam >= VK_PRIOR && wparam <= VK_DOWN) {
+        LRESULT result = CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
+        /* A wheel gesture can hide an unchanged caret. Navigation must reveal
+           it even when Home/End does not change the existing selection. */
+        SendMessageW(window, EM_SCROLLCARET, 0, 0);
+        return result;
+    }
     return CallWindowProcW(note->edit_proc, window, message, wparam, lparam);
 }
 
@@ -1222,7 +1292,7 @@ static BOOL fit_dimensions(Note *note, int width, int height) {
     if (width == previous_width && height == previous_height) return TRUE;
     note->width = width; note->height = height;
     layout(note);
-    if (note->ready && !text_fits(note)) {
+    if (note->ready && !accepts_text(note)) {
         note->width = previous_width; note->height = previous_height;
         layout(note); return FALSE;
     }
@@ -1244,7 +1314,7 @@ static BOOL resize_selected_text(Note *note, int direction) {
     /* Native size steps preserve each run's size, color and emphasis. One
        message creates one undo operation; RTF already persists the result. */
     changed = (BOOL)SendMessageW(note->edit, EM_SETFONTSIZE, (WPARAM)(INT_PTR)direction, 0);
-    if (changed && !text_fits(note)) {
+    if (changed && !accepts_text(note)) {
         SendMessageW(note->edit, EM_UNDO, 0, 0);
         SendMessageW(note->edit, EM_EXSETSEL, 0, (LPARAM)&selection);
         changed = FALSE;
@@ -1287,6 +1357,79 @@ static void wheel_resize(Note *note, int delta) {
     if (!text) SetTimer(note->window, SAVE_TIMER, 400, NULL);
 }
 
+static void apply_scrolling(Note *note, BOOL enabled) {
+    BOOL validating = note->validating;
+    POINT origin = {0};
+    note->validating = TRUE;
+    note->scrolling = enabled;
+    note->scroll_delta = 0;
+    SendMessageW(note->edit, EM_SETOPTIONS, enabled ? ECOOP_OR : ECOOP_AND,
+                 enabled ? ECO_AUTOVSCROLL : ~(LPARAM)ECO_AUTOVSCROLL);
+    /* Scrolling belongs to the editor; its native bar must not take space
+       from the note. Keep wheel, keyboard and caret scrolling enabled. */
+    SendMessageW(note->edit, EM_SHOWSCROLLBAR, SB_VERT, FALSE);
+    if (!enabled) SendMessageW(note->edit, EM_SETSCROLLPOS, 0, (LPARAM)&origin);
+    note->validating = validating;
+}
+
+static BOOL set_note_scrolling(Note *note, BOOL enabled) {
+    POINT previous_scroll = {0};
+    if (note->scrolling == enabled) return TRUE;
+    /* Flush pending content first: changing the mode then writes only its
+       layout key. A failed write cannot leave a new mode active in memory. */
+    if (!save_note(note)) {
+        report_error(note->window, L"The note could not be saved. Its scrolling setting has not changed.");
+        return FALSE;
+    }
+    SendMessageW(note->edit, EM_GETSCROLLPOS, 0, (LPARAM)&previous_scroll);
+    apply_scrolling(note, enabled);
+    if (!enabled && !text_fits(note)) {
+        apply_scrolling(note, TRUE);
+        SendMessageW(note->edit, EM_SETSCROLLPOS, 0, (LPARAM)&previous_scroll);
+        report_error(note->window, L"The text does not fit without scrolling. Enlarge the note or shorten the text first. Your text has been kept.");
+        return FALSE;
+    }
+    if (!save_note(note)) {
+        apply_scrolling(note, !enabled);
+        SendMessageW(note->edit, EM_SETSCROLLPOS, 0, (LPARAM)&previous_scroll);
+        report_error(note->window, L"The scrolling setting could not be saved. The previous setting has been restored.");
+        return FALSE;
+    }
+    return TRUE;
+}
+
+enum { SCROLL_THIS_NOTE = 1001, SCROLL_NEW_NOTES };
+
+static void choose_scrolling(Note *note) {
+    const TASKDIALOG_BUTTON buttons[] = {
+        {SCROLL_THIS_NOTE, L"Only this note"},
+        {SCROLL_NEW_NOTES, L"This note and new notes\nRemember as the default after restart. Other existing notes keep their setting."}
+    };
+    TASKDIALOGCONFIG dialog = {0};
+    HWND owner = note->window;
+    HRESULT result;
+    BOOL enabled = !note->scrolling;
+    int choice = IDCANCEL;
+    dialog.cbSize = sizeof(dialog); dialog.hwndParent = note->window;
+    dialog.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    dialog.pszWindowTitle = L"Jotilla";
+    dialog.pszMainInstruction = enabled ? L"Enable scrollable text?" : L"Turn off scrollable text?";
+    dialog.pszContent = enabled ? L"Text wraps to the note width and scrolls vertically." :
+                                 L"Text will need to fit inside the note. No text will be removed.";
+    dialog.cButtons = ARRAYSIZE(buttons); dialog.pButtons = buttons; dialog.nDefaultButton = SCROLL_THIS_NOTE;
+    result = TaskDialogIndirect(&dialog, &choice, NULL, NULL);
+    if (!IsWindow(owner) || (Note *)GetWindowLongPtrW(owner, GWLP_USERDATA) != note) return;
+    if (FAILED(result)) {
+        report_error(note->window, L"The scrolling options could not be opened."); return;
+    }
+    if ((choice != SCROLL_THIS_NOTE && choice != SCROLL_NEW_NOTES) || !set_note_scrolling(note, enabled)) return;
+    if (choice == SCROLL_NEW_NOTES) {
+        if (write_setting(L"app", L"scroll", enabled)) default_scrolling = enabled;
+        else report_error(note->window, L"This note was updated, but the default for new notes could not be saved.");
+    }
+}
+
 static void note_command(Note *note, UINT command) {
     if (command == CMD_BROWSE) {
         browse_notes();
@@ -1299,6 +1442,8 @@ static void note_command(Note *note, UINT command) {
         TagEditor editor = {0};
         editor.note = note;
         DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_TAGS), note->window, tags_dialog, (LPARAM)&editor);
+    } else if (command == CMD_SCROLL) {
+        choose_scrolling(note);
     } else if (command >= CMD_OPACITY && command < CMD_OPACITY + 5) {
         int previous = note->opacity;
         note->opacity = OPACITIES[command - CMD_OPACITY];
@@ -1340,6 +1485,7 @@ static HMENU build_note_menu(const Note *note) {
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)opacity, L"Opacity");
     AppendMenuW(menu, MF_STRING, CMD_TITLE, L"Edit title");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)size, L"Note size");
+    AppendMenuW(menu, MF_STRING | (note->scrolling ? MF_CHECKED : 0), CMD_SCROLL, L"Scrollable text");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)palette, L"New note palette");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
@@ -1349,13 +1495,14 @@ static HMENU build_note_menu(const Note *note) {
 
 static void show_note_menu(Note *note, POINT point) {
     HMENU menu = build_note_menu(note);
+    HWND owner = note->window;
     UINT command;
     if (!menu) return;
-    SetForegroundWindow(note->window);
-    command = (UINT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, note->window, NULL);
+    SetForegroundWindow(owner);
+    command = (UINT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, owner, NULL);
     DestroyMenu(menu);
-    if (command) note_command(note, command);
-    PostMessageW(note->window, WM_NULL, 0, 0);
+    if (command && IsWindow(owner) && (Note *)GetWindowLongPtrW(owner, GWLP_USERDATA) == note) note_command(note, command);
+    PostMessageW(owner, WM_NULL, 0, 0);
 }
 
 static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1391,7 +1538,8 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
             DwmSetWindowAttribute(window, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
         }
         note->brush = CreateSolidBrush(note_color(note));
-        note->edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN | ES_NOHIDESEL,
+        note->edit = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_WANTRETURN | ES_NOHIDESEL |
+                                    (note->scrolling ? ES_AUTOVSCROLL : 0),
                                     0, 0, 1, 1, window, (HMENU)(INT_PTR)10, instance, NULL);
         if (!note->edit || !note->brush) return -1;
         {
@@ -1487,7 +1635,9 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     case WM_COMMAND:
         if (!lparam) { note_command(note, LOWORD(wparam)); return 0; }
         if (HIWORD(wparam) == EN_CHANGE && note->ready && !note->validating) {
-            if (!text_fits(note) || !remember_text(note)) {
+            BOOL fits = accepts_text(note);
+            if (!fits || !remember_text(note)) {
+                note->edit_overflow = !fits;
                 note->validating = TRUE;
                 if (!SendMessageW(note->edit, EM_UNDO, 0, 0))
                     SetWindowTextW(note->edit, note->accepted_text);
@@ -1578,6 +1728,9 @@ static LRESULT CALLBACK note_proc(HWND window, UINT message, WPARAM wparam, LPAR
     case WM_NCLBUTTONDBLCLK:
         if (wparam == HTCAPTION) { note_command(note, CMD_TITLE); return 0; }
         break;
+    case WM_ACTIVATE:
+        if (LOWORD(wparam) != WA_INACTIVE) remember_note(note);
+        break;
     case WM_SETFOCUS:
         if (!note->collapsed) SetFocus(note->edit);
         return 0;
@@ -1625,6 +1778,8 @@ static Note *open_note_at(const wchar_t *id, int color, BOOL restore, const POIN
     note->color = restore ? layout_setting(note, LAYOUT_COLOR, color) : color;
     note->palette = restore ? layout_setting(note, LAYOUT_PALETTE, 0) : current_palette;
     note->custom_ink = restore && layout_setting(note, LAYOUT_CUSTOM_INK, FALSE) != 0;
+    /* Older notes retain bounded text even if the new-note default changes. */
+    note->scrolling = restore ? layout_setting(note, LAYOUT_SCROLL, FALSE) != 0 : default_scrolling;
     if (restore) {
         wchar_t date[32];
         GetPrivateProfileStringW(id,L"calendar_date",L"",date,32,state_path);
@@ -1685,11 +1840,12 @@ static Note *open_note_at(const wchar_t *id, int color, BOOL restore, const POIN
        No cursor polling, subsequent jump, or change to tray placement. */
     SetWindowPos(window, NULL, x, y, note->width, note_height(note), SWP_NOZORDER | SWP_NOACTIVATE);
     layout(note);
-    if (!text_fits(note) || !remember_text(note)) { destroy_note(note); return NULL; }
+    if (!accepts_text(note) || !remember_text(note)) { destroy_note(note); return NULL; }
     note->ready = TRUE;
     if (!apply_opacity(note)) { destroy_note(note); return NULL; }
     if (note_has_content(note) && !save_layout(note, TRUE)) { destroy_note(note); return NULL; }
     if (note->persisted && !note_has_content(note) && !save_note(note)) { destroy_note(note); return NULL; }
+    remember_note(note);
     if (!testing) {
         ShowWindow(window, startup_restore ? SW_SHOWNOACTIVATE : SW_SHOWNORMAL);
         if (!startup_restore) {
@@ -1738,6 +1894,7 @@ static BOOL restore_notes(void) {
     if (swprintf_s(pattern, PATH_CAP, L"%s\\*.txt", directory) < 0) return FALSE;
     search = FindFirstFileW(pattern, &found);
     if (search == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    restoring_notes = TRUE;
     do {
         wchar_t id[80];
         size_t length = wcslen(found.cFileName);
@@ -1748,6 +1905,8 @@ static BOOL restore_notes(void) {
     } while (FindNextFileW(search, &found));
     if (GetLastError() != ERROR_NO_MORE_FILES) ok = FALSE;
     FindClose(search);
+    restoring_notes = FALSE;
+    if (!last_note[0] && notes) remember_note(notes);
     return ok;
 }
 
@@ -1756,7 +1915,7 @@ static void tray(BOOL add) {
     data.cbSize = sizeof(data); data.hWnd = controller; data.uID = 1;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = TRAY_MESSAGE; data.hIcon = app_icon ? app_icon : LoadIconW(NULL, IDI_APPLICATION);
-    wcscpy_s(data.szTip, 128, L"Jotilla - Ctrl+Alt++");
+    wcscpy_s(data.szTip, 128, L"Jotilla - last note; double-click for explorer; Ctrl+Alt++ for new note");
     Shell_NotifyIconW(add ? NIM_ADD : NIM_DELETE, &data);
 }
 
@@ -1764,6 +1923,11 @@ static BOOL save_all(void) {
     Note *note;
     BOOL ok = TRUE;
     for (note = notes; note; note = note->next) if (!save_note(note)) ok = FALSE;
+    if (wcscmp(last_note, saved_last_note)) {
+        if (WritePrivateProfileStringW(L"app", L"last_note", last_note, state_path))
+            wcscpy_s(saved_last_note, 80, last_note);
+        else ok = FALSE;
+    }
     if (next_color != saved_next_color) {
         if (write_setting(L"app", L"next_color", next_color)) saved_next_color = next_color;
         else ok = FALSE;
@@ -1791,6 +1955,7 @@ static BOOL open_archived_note(const wchar_t *id) {
     Note *note = find_note(id);
     if (!note) note = open_note(id, 0, TRUE);
     if (!note) return FALSE;
+    remember_note(note);
     if (note->collapsed) toggle_note(note);
     ShowWindow(note->window, SW_SHOWNORMAL);
     SetForegroundWindow(note->window); SetFocus(note->edit);
@@ -1850,7 +2015,31 @@ static HWND browse_notes(void) {
     return browser;
 }
 
+static void recall_note(void) {
+    wchar_t path[PATH_CAP];
+    DWORD attributes;
+    if (last_note[0]) {
+        if (find_note(last_note)) { open_archived_note(last_note); return; }
+        if (swprintf_s(path, PATH_CAP, L"%s\\%s.txt", directory, last_note) >= 0) {
+            attributes = GetFileAttributesW(path);
+            if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                if (!open_archived_note(last_note))
+                    report_error(controller, L"The last note could not be opened. Its original files have been kept.");
+                return;
+            }
+        }
+    }
+    browse_notes();
+}
+
 static void load_preferences(void) {
+    GetPrivateProfileStringW(L"app", L"last_note", L"", last_note, 80, state_path);
+    /* Never let an externally edited ID escape the selected archive. */
+    if ((wcsncmp(last_note, L"note-", 5) && wcsncmp(last_note, L"nota-", 5)) ||
+        wcsspn(last_note, L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != wcslen(last_note))
+        last_note[0] = 0;
+    wcscpy_s(saved_last_note, 80, last_note);
+    default_scrolling = setting(L"app", L"scroll", FALSE) != 0;
     next_color = setting(L"app", L"next_color", 0);
     if (next_color < 0 || next_color >= COLOR_COUNT) next_color = 0;
     saved_next_color = next_color;
@@ -1944,7 +2133,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
                 tray_click = TRAY_PENDING;
                 if (!SetTimer(window, TRAY_CLICK_TIMER, GetDoubleClickTime(), NULL)) {
                     tray_click = TRAY_IDLE;
-                    PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+                    recall_note();
                 }
             }
         }
@@ -1978,7 +2167,7 @@ static LRESULT CALLBACK controller_proc(HWND window, UINT message, WPARAM wparam
         if (wparam == TRAY_CLICK_TIMER && tray_click == TRAY_PENDING) {
             KillTimer(window, TRAY_CLICK_TIMER);
             tray_click = TRAY_IDLE;
-            PostMessageW(window, NEW_NOTE_MESSAGE, 0, 0);
+            recall_note();
         }
         return 0;
     case WM_CLOSE:

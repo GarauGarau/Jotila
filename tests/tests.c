@@ -11,7 +11,16 @@
 static unsigned metadata_writes, metric_queries, graphic_creations, heap_requests;
 /* Physical input checks are opt-in so ordinary runs do not type on the user's desktop. */
 static BOOL interactive_tests;
+static unsigned paste_notices;
+static int inspect_message_box(HWND owner, LPCWSTR message, LPCWSTR title, UINT flags);
+static HRESULT inspect_scroll_options(const TASKDIALOGCONFIG *dialog, int *button, int *radio, BOOL *checked);
 static BOOL fake_cursor;
+static BOOL override_wheel_lines;
+static UINT wheel_lines;
+static BOOL trace_system_parameters(UINT action, UINT parameter, PVOID value, UINT flags) {
+    if (override_wheel_lines && action == SPI_GETWHEELSCROLLLINES) { *(UINT *)value = wheel_lines; return TRUE; }
+    return SystemParametersInfoW(action, parameter, value, flags);
+}
 static POINT test_cursor;
 static BOOL trace_cursor(LPPOINT point) {
     if (!fake_cursor) return GetCursorPos(point);
@@ -46,7 +55,13 @@ static void *trace_realloc(void *memory, size_t size) { ++heap_requests; return 
 #define calloc trace_calloc
 #define realloc trace_realloc
 #define GetCursorPos trace_cursor
+#define MessageBoxW inspect_message_box
+#define TaskDialogIndirect inspect_scroll_options
+#define SystemParametersInfoW trace_system_parameters
 #include "../src/jotilla.c"
+#undef SystemParametersInfoW
+#undef TaskDialogIndirect
+#undef MessageBoxW
 #undef WritePrivateProfileStringW
 #undef WritePrivateProfileSectionW
 #undef GetTextMetricsW
@@ -62,6 +77,17 @@ static void require(BOOL condition, const char *message) {
         fprintf(stderr, "FAIL: %s (Windows error %lu)\n", message, GetLastError());
         exit(1);
     }
+}
+
+static int inspect_message_box(HWND owner, LPCWSTR message, LPCWSTR title, UINT flags) {
+    Note *note = (Note *)GetWindowLongPtrW(owner, GWLP_USERDATA);
+    require(note && note->edit && !note->validating && editor_matches_text(note) && text_fits(note),
+            "paste warning appears only after the native editor has restored the accepted text");
+    require(!wcscmp(title, L"Jotilla") && flags == (MB_OK | MB_ICONINFORMATION) &&
+            wcsstr(message, L"Enlarge the note or paste less text") != NULL,
+            "paste warning explains how to make the content fit");
+    ++paste_notices;
+    return IDOK;
 }
 
 static int note_count(void) {
@@ -93,16 +119,36 @@ static void tray_checks(void) {
     DWORD wait = GetDoubleClickTime() + 80;
     int count = note_count();
     HWND browser;
+    Note *recent = new_note(), *other = new_note();
+    wchar_t id[80];
+    require(recent && other, "create recent-note fixtures");
+    SetWindowTextW(recent->edit, L"Last used note");
+    require(save_note(recent), "persist recent-note fixture");
+    wcscpy_s(id, 80, recent->id);
+    SendMessageW(recent->window, WM_ACTIVATE, WA_ACTIVE, 0);
+    toggle_note(recent);
+    count += 2;
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
     require(note_count() == count && !thread_window(L"Jotilla.Archive", NULL),
             "first tray click waits without creating a note or opening the browser");
     pump(wait);
-    require(note_count() == count + 1 && !thread_window(L"Jotilla.Archive", NULL),
-            "single tray click creates exactly one note after the Windows interval");
+    require(note_count() == count && !recent->collapsed && IsWindowVisible(recent->window) &&
+            !wcscmp(last_note, id) && !thread_window(L"Jotilla.Archive", NULL),
+            "single tray click recalls and unfolds the last used note without creating one");
+    ShowWindow(recent->window, SW_HIDE);
     pump(wait);
-    require(note_count() == count + 1, "single tray click timer does not repeat");
-    destroy_note(notes);
+    require(note_count() == count && !IsWindowVisible(recent->window), "single tray click timer does not repeat");
+    require(save_all(), "save recent identity with session");
+    last_note[0] = 0; load_preferences();
+    require(!wcscmp(last_note,id), "recent identity survives preferences reload");
+    SendMessageW(recent->window,WM_CLOSE,0,0);
+    require(!find_note(id), "close recent note into archive");
+    wcscpy_s(last_note,80,id);
+    recall_note(); recent=find_note(id);
+    require(recent && IsWindowVisible(recent->window) && note_count()==count,
+            "recall reopens the same archived note");
+    ShowWindow(recent->window,SW_HIDE);
 
     /* Shell notification order: down, up, double-click, up. */
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
@@ -115,13 +161,14 @@ static void tray_checks(void) {
     /* KillTimer can leave an already queued WM_TIMER behind. */
     SendMessageW(controller, WM_TIMER, TRAY_CLICK_TIMER, 0);
     pump(wait);
-    require(note_count() == count, "double-click release and stale timer cannot create a stray note");
+    require(note_count() == count && !IsWindowVisible(recent->window),
+            "double-click release and stale timer cannot recall or create a stray note");
 
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
     pump(wait);
-    require(note_count() == count + 1, "single tray click still works after a complete double click");
-    destroy_note(notes);
+    require(note_count() == count && IsWindowVisible(recent->window), "single tray click still works after a complete double click");
+    ShowWindow(recent->window,SW_HIDE);
 
     ShowWindow(browser, SW_MINIMIZE);
     require(!IsWindowVisible(browser), "minimized browser is hidden in the notification area");
@@ -134,8 +181,7 @@ static void tray_checks(void) {
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONDOWN);
     SendMessageW(controller, TRAY_MESSAGE, 1, WM_LBUTTONUP);
     pump(wait);
-    require(note_count() == count + 1, "a missing double-click release cannot swallow the next single click");
-    destroy_note(notes);
+    require(note_count() == count && IsWindowVisible(recent->window), "a missing double-click release cannot swallow the next single click");
     ShowWindow(browser, SW_MAXIMIZE);
     browse_notes();
     require(IsZoomed(browser), "opening the visible browser preserves its maximized placement");
@@ -143,8 +189,19 @@ static void tray_checks(void) {
     require(!IsWindowVisible(browser), "system minimize hides a maximized browser too");
     browse_notes();
     require(IsWindowVisible(browser) && IsZoomed(browser), "tray restore retains maximized placement");
+    require(delete_archived_note(id), "delete recent fixture");
+    wcscpy_s(last_note,80,id); ShowWindow(browser,SW_HIDE); recall_note();
+    require(IsWindowVisible(browser) && !find_note(id) && note_count()==count-1,
+            "deleted recent note falls back to explorer without recreating it");
+    destroy_note(other); last_note[0]=0;
+    ShowWindow(browser,SW_HIDE); recall_note();
+    require(IsWindowVisible(browser) && note_count()==count-2,"empty recent identity opens explorer without creating a note");
+    SendMessageW(controller,NEW_NOTE_MESSAGE,0,0);
+    require(note_count()==count-1,"explicit New note command still creates a note");
+    destroy_note(notes); last_note[0]=0;
+    require(save_all(),"clear recent fixture preference");
     archive_close();
-    puts("PASS: tray single/double clicks, cancelled timers, browser reuse and subsequent clicks.");
+    puts("PASS: tray recall, activation tracking, archived/deleted notes, saved identity, double clicks and explicit creation.");
 }
 
 static void replace_text(Note *note, const wchar_t *text) {
@@ -486,9 +543,10 @@ static void options_checks(void) {
     require(swscanf_s(note->id,L"note-%4u-%2u-%2u_%2u-%2u-%2u-%3u-%u",&year,&month,&day,&hour,&minute,&second,&millisecond,&suffix)==8,
             "archive names expose sortable creation date and time");
     menu=build_note_menu(note);
-    require(menu && GetMenuItemCount(menu)==10 && GetMenuItemID(menu,9)==CMD_TAGS && GetMenuItemID(menu,0)==CMD_ARCHIVE && GetMenuItemID(menu,1)==CMD_BROWSE &&
+    require(menu && GetMenuItemCount(menu)==11 && GetMenuItemID(menu,10)==CMD_TAGS && GetMenuItemID(menu,0)==CMD_ARCHIVE && GetMenuItemID(menu,1)==CMD_BROWSE &&
             GetMenuItemID(menu,4)==CMD_TITLE && GetMenuItemCount(GetSubMenu(menu,3))==5 &&
-            GetMenuItemCount(GetSubMenu(menu,5))==5 && GetMenuItemCount(GetSubMenu(menu,7))==3,"context menu exposes all requested choices");
+            GetMenuItemCount(GetSubMenu(menu,5))==5 && GetMenuItemID(menu,6)==CMD_SCROLL &&
+            GetMenuItemCount(GetSubMenu(menu,8))==3,"context menu exposes all requested choices");
     DestroyMenu(menu);
     replace_text(note,L"Saved size preset");
     require(resize_note(note,4),"square preset is available");
@@ -1819,6 +1877,8 @@ static void location_checks(void) {
 #include "text_size_checks.c"
 #include "calendar_checks.c"
 #include "session_checks.c"
+#include "clipboard_checks.c"
+#include "scrolling_checks.c"
 
 int main(int argc, char **argv) {
     wchar_t temporary[PATH_CAP], root[PATH_CAP], id[80], path[PATH_CAP], text[256], pattern[PATH_CAP];
@@ -1857,6 +1917,9 @@ int main(int argc, char **argv) {
     controller = CreateWindowExW(WS_EX_TOOLWINDOW, APP_CLASS, L"Jotilla test", WS_OVERLAPPED,
                                  0, 0, 0, 0, NULL, NULL, instance, NULL);
     require(controller != NULL, "create hotkey controller");
+    /* Explicit mode: these checks replace the system clipboard contents. */
+    if (argc==2 && !strcmp(argv[1],"--clipboard-only")) { clipboard_checks(); goto cleanup; }
+    if (argc==2 && !strcmp(argv[1],"--scrolling-only")) { scrolling_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--calendar-only")) { calendar_checks(); shortcut_checks(); goto cleanup; }
     if (argc==2 && !strcmp(argv[1],"--archive-only")) {
         require(new_note()!=NULL,"create archive test owner");
@@ -1979,6 +2042,7 @@ int main(int argc, char **argv) {
     editing_checks();
     resizing_checks();
     text_size_checks();
+    scrolling_checks();
     archive_checks();
     tags_search_checks();
     empty_note_checks();

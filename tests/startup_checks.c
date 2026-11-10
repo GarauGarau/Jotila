@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
+#include <richedit.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +114,51 @@ static BOOL CALLBACK palette_on_monitor(HMONITOR monitor,HDC dc,LPRECT rect,LPAR
     return TRUE;
 }
 
+static void scrolling_restart_checks(void) {
+    char content[8192] = "";
+    wchar_t settings[CAP], text[8192], expected[8192];
+    HWND windows[8], scrolling = NULL, bounded = NULL, created = NULL;
+    int i, round, count;
+    for (i = 0; i < 160; ++i) strcat_s(content, sizeof(content), "Scrolling document survives process restart.\r\n");
+    require(MultiByteToWideChar(CP_UTF8, 0, content, -1, expected, 8192) > 0, "prepare complete expected scrolling text");
+    fixture(L"notes\\note-scrolling.txt", content);
+    path(settings, L"notes\\notes.ini");
+    require(WritePrivateProfileStringW(L"app", L"scroll", L"1", settings) &&
+            WritePrivateProfileStringW(L"note-scrolling", L"scroll", L"1", settings) &&
+            WritePrivateProfileStringW(L"note-scrolling", L"open", L"1", settings) &&
+            WritePrivateProfileStringW(L"note-scrolling", L"collapsed", L"1", settings),
+            "write private persistent scrolling fixtures");
+    for (round = 0; round < 2; ++round) {
+        start(TRUE);
+        count = note_windows(windows);
+        require(count == 2, "restart opens the saved long note and the original bounded note");
+        for (i = 0; i < count; ++i) {
+            HWND edit = GetDlgItem(windows[i], 10);
+            SendMessageW(edit, WM_GETTEXT, 8192, (LPARAM)text);
+            if (!wcscmp(text, expected)) scrolling = windows[i];
+            else if (!wcscmp(text, L"Restored after startup")) bounded = windows[i];
+        }
+        require(scrolling && bounded, "real process restores the complete text of both private notes");
+        require((SendDlgItemMessageW(scrolling, 10, EM_GETOPTIONS, 0, 0) & ECO_AUTOVSCROLL) &&
+                !(SendDlgItemMessageW(bounded, 10, EM_GETOPTIONS, 0, 0) & ECO_AUTOVSCROLL),
+                "real process restores each note's mode before reading long content");
+        require(!(GetWindowLongPtrW(GetDlgItem(scrolling, 10), GWL_STYLE) & (WS_VSCROLL | WS_HSCROLL)),
+                "long scrollable notes restart without visible scroll bars");
+        second_launch(FALSE);
+        count = note_windows(windows);
+        require(count == 3, "explicit creation adds a note after restart");
+        for (i = 0; i < count; ++i)
+            if (!SendDlgItemMessageW(windows[i], 10, WM_GETTEXTLENGTH, 0, 0)) created = windows[i];
+        require(created && (SendDlgItemMessageW(created, 10, EM_GETOPTIONS, 0, 0) & ECO_AUTOVSCROLL),
+                "new notes inherit the scrolling default in each fresh process");
+        require(!(GetWindowLongPtrW(GetDlgItem(created, 10), GWL_STYLE) & (WS_VSCROLL | WS_HSCROLL)),
+                "the persisted scrolling default creates notes without visible scroll bars");
+        SendMessageW(created, WM_CLOSE, 0, 0);
+        stop(); scrolling = bounded = created = NULL;
+    }
+    puts("PASS: real-process scrolling mode, complete long documents, legacy bounded notes and default persistence across two restarts.");
+}
+
 int main(void) {
     wchar_t temporary[CAP], value[CAP], pattern[CAP];
     HWND windows[8];
@@ -150,7 +196,20 @@ int main(void) {
     stop(); start(TRUE);
     require(note_windows(windows)==1 && GetWindowRect(windows[0],&after) && EqualRect(&before,&after),
             "real process restart retains note geometry and folded state");
+    SendMessageW(windows[0],WM_ACTIVATE,WA_ACTIVE,0);
+    stop(); start(TRUE);
+    SendMessageW(control,WM_APP+1,1,WM_LBUTTONUP);
+    SendMessageW(control,WM_TIMER,2,0);
+    require(note_windows(windows)==1 && GetWindowRect(windows[0],&after) &&
+            after.bottom-after.top>before.bottom-before.top,
+            "tray recalls and unfolds the saved last note across a real process restart without creating another");
+    SendMessageW(windows[0],WM_CLOSE,0,0);
+    require(note_windows(windows)==0,"close last real-process note into archive");
+    SendMessageW(control,WM_APP+1,1,WM_LBUTTONUP);
+    SendMessageW(control,WM_TIMER,2,0);
+    require(note_windows(windows)==1,"tray reopens last archived note in the running release");
     stop();
+    scrolling_restart_checks();
     path(pattern,L"notes\\*");
     scan=FindFirstFileW(pattern,&entry);
     require(scan!=INVALID_HANDLE_VALUE,"enumerate private archive for cleanup");

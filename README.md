@@ -8,8 +8,8 @@ Small, native notes with autosave, an archive and a calendar. No extra dependenc
 
 | System | Installer | Portable · no installation |
 |---|---|---|
-| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.3/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.8.3/Jotilla-portable-x64.zip) |
-| macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/macos-v0.1.3/Jotilla-portable-universal.zip) |
+| Windows 10/11 · x64 | [Setup (.exe)](https://github.com/GarauGarau/Jotilla/releases/download/v1.10.0/Jotilla-Setup-x64.exe) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.10.0/Jotilla-portable-x64.zip) |
+| macOS 13+ · Apple Silicon / Intel · preview | [Setup (.pkg)](https://github.com/GarauGarau/Jotilla/releases/download/v1.10.0/Jotilla-Setup-universal.pkg) | [Portable ZIP](https://github.com/GarauGarau/Jotilla/releases/download/v1.10.0/Jotilla-portable-universal.zip) |
 
 Run the installer, or extract the portable ZIP and launch Jotilla. For the Mac portable app, select the included `Notes.jotillaarchive` folder when prompted.
 
@@ -34,11 +34,16 @@ Drag the bar to move; double-click its title to rename. **− / □** folds or e
 
 Open notes return to their saved positions, sizes and folded state, with their title bars kept reachable if a monitor is disconnected.
 
+On Windows, right-click a note's bar and choose **Scrollable text** to allow longer
+text with vertical scrolling and no visible scroll bar. Use the mouse wheel,
+Page Up/Down or Ctrl+Home/End. Apply it to this note, or also make it the default
+for new notes. Both choices survive restart; other existing notes keep their mode.
+
 Click the note's **calendar icon** to assign, change or remove its day. The square calendar button beside **Archive** switches to the year view: circled days open a note, or a compact title list when several share the day. Type a year directly in either calendar. In day lists, **↑ / ↓**, **Page Up / Down**, **Home / End** navigate, **Enter** opens and **Esc** returns. Search also filters calendar notes.
 
 Right-click the text for [80 color palettes](docs/palettes.md); select text first to color just that selection. **← / →** browse, click applies, **★** applies a favorite to this note and new notes, including after restart. Right-click the bar for more options.
 
-Search by text or tags: `#work`, `"release plan"`, or `-#` for untagged notes. **F5** reloads external edits. Double-click the tray or menu bar icon to open the explorer, single-click for a new note.
+Search by text or tags: `#work`, `"release plan"`, or `-#` for untagged notes. **F5** reloads external edits. Double-click the tray or menu bar icon to open the explorer, single-click to recall the last used note (or the explorer if it is unavailable). Create notes with the global shortcut or **New note** in the icon’s right-click menu. The last-note identity is saved with the session, independently for each archive.
 
 | Notes and shortcuts | Archive and calendar |
 |---|---|

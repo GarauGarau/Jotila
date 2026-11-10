@@ -19,6 +19,9 @@ jobs:
       - name: Analyze native C sources
         shell: cmd
         run: build.cmd analyze
+      - name: Check clipboard paste warnings and text interchange
+        shell: cmd
+        run: build\tests.exe --clipboard-only
       - name: Test installation and preserve notes on uninstall
         shell: pwsh
         run: ./tools/test-install.ps1

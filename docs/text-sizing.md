@@ -6,10 +6,16 @@ notes resize their stored expanded dimensions. Dragging an edge or corner always
 resizes the note.
 
 Text keeps its colors, emphasis and mixed sizes. Each wheel step follows Rich
-Edit's native font-size increments. Growth stops before any content would be
-clipped; reducing the text immediately works in the other direction. Ctrl + Z
+Edit's native font-size increments. With scrolling off, growth stops before any
+content would be clipped; reducing the text immediately works in the other direction. Ctrl + Z
 and Ctrl + Y undo and redo font changes. Sizes persist in the existing RTF file,
 without changing the plain-text file or adding metadata.
+
+With **Scrollable text** enabled in the note-bar menu, text can extend below the
+visible area. Resizing the note or its text keeps the complete document and
+updates native scrolling without displaying a scroll bar. The mouse wheel and
+navigation keys move through the text. Mode changes retain formatting, selection and undo
+history; returning to bounded text requires the document to fit the note.
 
 ## Native implementation
 

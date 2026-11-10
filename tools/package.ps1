@@ -9,7 +9,8 @@ $readme = @'
 Jotilla - Sticky notes, on silicon
 
 Run Jotilla.exe. Ctrl+Alt++ creates a note exactly at the mouse pointer.
-Single-click the tray icon for a new note; double-click to browse notes.
+Single-click the tray icon to recall the last used note; double-click to browse notes.
+Use Ctrl+Alt++ or right-click the tray and choose New note to create a note.
 Tray creation keeps the usual staggered position.
 Open notes return to their saved positions, sizes and folded state after restart.
 Closed notes remain archived. Unplugged monitors cannot strand a note's title bar.
@@ -19,7 +20,7 @@ Minimizing the browser hides it beside the clock; double-click restores it.
 Drag the bar to move it; use - to collapse and X to close.
 Ctrl++ / Ctrl+- / Ctrl+mouse wheel or a touchpad pinch resizes the note.
 With text selected, the same gesture changes only its font size.
-Sizing stops before text would be clipped; Ctrl+Z/Ctrl+Y undo/redo font changes.
+With scrolling off, sizing stops before text would be clipped; Ctrl+Z/Ctrl+Y undo/redo font changes.
 Right-click the bar for the archive, opacity, title, size and three original palettes.
 Right-click the text for the color wheel; Left/Right browse all 80 Color-Hex Popular palettes.
 Click a color to apply and close; Escape cancels.
@@ -27,6 +28,14 @@ The star applies a favorite to this note and new notes, including after restart.
 Select text before right-clicking to change only its text color.
 #Title + Shift+Enter makes a title; Enter keeps it as text.
 Ctrl+E opens the note explorer; Ctrl+Z/Ctrl+Y undo/redo text and formatting.
+Ctrl+C/X/V copy, cut and paste text between notes and other apps; Shift+Insert also pastes.
+With scrolling off, if pasted text does not fit, a notice asks you to enlarge the note or paste less text.
+The existing text, formatting and selection are preserved.
+Right-click the bar and choose Scrollable text for longer text with vertical scrolling.
+No scroll bar is visible. Use the mouse wheel, Page Up/Down or Ctrl+Home/End.
+Choose Only this note or This note and new notes. Both choices survive restart.
+Existing notes retain their own setting. The default is stored in the current archive.
+The same menu turns scrolling off; enlarge or shorten overflowing notes first.
 The calendar icon assigns one day to a note; click it again to change or remove the day.
 The square button beside Archive opens the calendar. Click a circled day to open its notes.
 Type a year directly in either calendar. Arrow/Page/Home/End keys navigate day lists; Enter opens and Esc returns.
