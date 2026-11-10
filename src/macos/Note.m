@@ -101,6 +101,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
 @end
 @interface JNText : NSTextView
 @property(nonatomic, weak) JNNote *note;
+@property(nonatomic) BOOL pasting, pasteOverflow;
 @end
 @implementation JNText { CGFloat _wheelAmount, _pinchAmount; NSRange _lastSelection; }
 - (void)rightMouseDown:(NSEvent *)event { [self.note showPalette:event]; }
@@ -124,6 +125,17 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     while(fabs(_pinchAmount)>=1) { CGFloat step=_pinchAmount>0?1:-1; [self.note resizeBy:step]; _pinchAmount-=step; }
 }
 - (void)paste:(id)sender { [self pasteAsPlainText:sender]; }
+- (BOOL)readSelectionFromPasteboard:(NSPasteboard *)pasteboard type:(NSPasteboardType)type {
+    self.pasting=YES; self.pasteOverflow=NO;
+    BOOL result=[super readSelectionFromPasteboard:pasteboard type:type];
+    self.pasting=NO;
+    if (self.pasteOverflow) {
+        NSAlert *alert=[NSAlert new]; alert.messageText=@"The pasted text does not fit in this note";
+        alert.informativeText=@"Enlarge the note, paste less text, or enable Scrollable text from the note bar menu.";
+        [alert addButtonWithTitle:@"OK"]; [alert runModal];
+    }
+    return result;
+}
 - (void)mouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     NSUInteger index = [self characterIndexForInsertionAtPoint:point];
@@ -146,13 +158,15 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     BOOL _dirty, _contentDirty, _formatDirty, _layoutDirty, _ready, _collapsed;
     CGFloat _expandedHeight;
     NSInteger _palette, _color;
-    BOOL _customInk, _saveFailed;
+    BOOL _customInk, _saveFailed, _scrolling;
     JNPalette *_picker;
     JNBarButton *_foldButton, *_dateButton;
     NSTextStorage *_measureText;
     NSLayoutManager *_measureLayout;
     NSTextContainer *_measureContainer;
 }
+- (BOOL)scrolling { return _scrolling; }
+- (BOOL)collapsed { return _collapsed; }
 - (instancetype)initWithRecord:(JNRecord *)record app:(JNApp *)app fresh:(BOOL)fresh error:(NSError **)error {
     NSDictionary *s = record.settings;
     CGFloat width = bounded(s[@"mac_width"] ?: s[@"width"],300,180,4096);
@@ -163,6 +177,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
         backing:NSBackingStoreBuffered defer:NO];
     if (!(self = [super initWithWindow:panel])) return nil;
     _record = record; _app = app; _expandedHeight = height;
+    _scrolling=[(fresh ? app.store.preferences[@"scroll"] : s[@"scroll"]) boolValue];
     _palette = bounded(s[@"palette"],0,0,PALETTE_COUNT-1);
     _color = bounded(s[@"color"],0,0,PALETTE_SIZES[_palette]-1);
     _customInk = [s[@"custom_ink"] boolValue];
@@ -205,7 +220,9 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     frame.origin.y = MAX(NSMinY(visible),MIN(frame.origin.y,NSMaxY(visible)-frame.size.height));
     [panel setFrame:frame display:NO]; _expandedHeight = frame.size.height;
     if ([s[@"collapsed"] boolValue]) [self fold:nil];
-    _scroll.autohidesScrollers=YES; _scroll.hasVerticalScroller=![self fitsText:editor.textStorage size:frame.size];
+    /* Native scrolling needs no scroller or reserved gutter, including for
+       imported notes whose text is taller than this display. */
+    _scroll.hasVerticalScroller=NO; _scroll.hasHorizontalScroller=NO;
     _ready = YES; _layoutDirty = fresh;
     return self;
 }
@@ -247,9 +264,10 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     }];
 }
 - (void)textDidChange:(NSNotification *)notification { (void)notification; if (_ready) { _dirty = _contentDirty = _formatDirty = YES; [self schedule]; } }
+- (void)windowDidBecomeKey:(NSNotification *)notification { (void)notification; if (_ready) [self.app rememberNote:self]; }
 - (void)windowDidResignKey:(NSNotification *)notification { (void)notification; if(_ready) { NSError *error=nil; if(![self flush:&error]) JNError(error); } }
 - (void)windowDidChangeScreen:(NSNotification *)notification { (void)notification; [_picker close]; }
-- (void)windowDidResize:(NSNotification *)notification { (void)notification; if(_ready && !_collapsed) _scroll.hasVerticalScroller=![self fitsText:_editor.textStorage size:self.window.frame.size]; [self geometryChanged]; }
+- (void)windowDidResize:(NSNotification *)notification { (void)notification; [self geometryChanged]; }
 - (void)windowDidMove:(NSNotification *)notification { (void)notification; [self geometryChanged]; }
 - (void)geometryChanged { if (_ready) { _layoutDirty = YES; [self schedule]; } }
 - (BOOL)flush:(NSError **)error {
@@ -263,6 +281,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     s[@"open"] = @"1"; s[@"collapsed"] = _collapsed ? @"1" : @"0";
     s[@"palette"] = @(_palette).stringValue; s[@"color"] = @(_color).stringValue;
     s[@"custom_ink"] = _customInk ? @"1" : @"0";
+    s[@"scroll"] = _scrolling ? @"1" : @"0";
     s[@"opacity"] = @((int)round(self.window.alphaValue*100)).stringValue;
     BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:[self.app.store URLFor:_record extension:@"txt"].path];
     BOOL ok = _dirty ? [self.app.store save:_record text:_editor.textStorage writeText:_contentDirty writeRich:_formatDirty error:error] : !exists || [self.app.store saveMetadata:error];
@@ -280,7 +299,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
         f.origin = NSMakePoint(MAX(NSMinX(v),MIN(mouse.x,NSMaxX(v)-f.size.width)),MAX(NSMinY(v),MIN(mouse.y-f.size.height,NSMaxY(v)-f.size.height)));
         [self.window setFrame:f display:NO];
     }
-    if (activate) { JNActivate(); [self.window makeKeyAndOrderFront:nil]; [self.window makeFirstResponder:_editor]; }
+    if (activate) { [self.app rememberNote:self]; JNActivate(); [self.window makeKeyAndOrderFront:nil]; [self.window makeFirstResponder:_editor]; }
     else [self.window orderFront:nil];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender {
@@ -336,7 +355,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
 - (void)replaceRange:(NSRange)range with:(NSAttributedString *)replacement {
     NSAttributedString *before = [_editor.textStorage attributedSubstringFromRange:range];
     NSUInteger nextLength = replacement.length;
-    if(![_editor.undoManager isUndoing] && ![_editor.undoManager isRedoing]) {
+    if(!_scrolling && ![_editor.undoManager isUndoing] && ![_editor.undoManager isRedoing]) {
         NSSize size=NSMakeSize(self.window.frame.size.width,_collapsed ? _expandedHeight : self.window.frame.size.height);
         [self prepareMeasure]; [_measureText setAttributedString:_editor.textStorage]; CGFloat beforeHeight=[self measuredHeightAtWidth:size.width];
         NSMutableAttributedString *candidate=[_editor.textStorage mutableCopy]; [candidate replaceCharactersInRange:range withAttributedString:replacement];
@@ -454,7 +473,7 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     [self prepareMeasure]; [_measureText setAttributedString:text]; return [self measuredHeightAtWidth:size.width]<=size.height+0.5;
 }
 - (BOOL)textView:(NSTextView *)text shouldChangeTextInRange:(NSRange)range replacementString:(NSString *)replacement {
-    if(!replacement || !_ready || text.hasMarkedText) return YES;
+    if(!replacement || !_ready || _scrolling || text.hasMarkedText) return YES;
     [self prepareMeasure];
     if(![_measureText.string isEqual:text.string]) [_measureText setAttributedString:text.textStorage];
     CGFloat available=_collapsed ? _expandedHeight : self.window.frame.size.height;
@@ -463,12 +482,15 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     [_measureText replaceCharactersInRange:range withAttributedString:[[NSAttributedString alloc] initWithString:replacement attributes:text.typingAttributes]];
     CGFloat after=[self measuredHeightAtWidth:self.window.frame.size.width];
     if(after<=available+0.5 || after<before || replacement.length<range.length) return YES;
-    [_measureText replaceCharactersInRange:NSMakeRange(range.location,replacement.length) withAttributedString:previous]; NSBeep(); return NO;
+    [_measureText replaceCharactersInRange:NSMakeRange(range.location,replacement.length) withAttributedString:previous];
+    JNText *editor=(JNText *)text;
+    if (editor.pasting) editor.pasteOverflow=YES; else NSBeep();
+    return NO;
 }
 - (BOOL)resizeTo:(NSSize)size {
     NSRect visible=(self.window.screen ?: NSScreen.mainScreen).visibleFrame;
     size.width=MIN(size.width,visible.size.width); size.height=MIN(size.height,visible.size.height);
-    if(size.width<180 || size.height<100 || ![self fitsText:_editor.textStorage size:size]) return NO;
+    if(size.width<180 || size.height<100 || (!_scrolling && ![self fitsText:_editor.textStorage size:size])) return NO;
     _expandedHeight=size.height;
     NSRect frame=self.window.frame; CGFloat height=_collapsed?32:size.height;
     frame.origin.y+=frame.size.height-height; frame.size=NSMakeSize(size.width,height);
@@ -476,7 +498,34 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
 }
 - (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)size {
     if(_collapsed) { size.height=32; return size; }
-    return [self fitsText:_editor.textStorage size:size] || (size.width>=sender.frame.size.width && size.height>=sender.frame.size.height) ? size : sender.frame.size;
+    return _scrolling || [self fitsText:_editor.textStorage size:size] || (size.width>=sender.frame.size.width && size.height>=sender.frame.size.height) ? size : sender.frame.size;
+}
+- (void)toggleScrolling:(id)sender {
+    (void)sender;
+    BOOL enabled=!_scrolling;
+    NSSize size=NSMakeSize(self.window.frame.size.width,_collapsed ? _expandedHeight : self.window.frame.size.height);
+    if (!enabled && ![self fitsText:_editor.textStorage size:size]) {
+        NSAlert *alert=[NSAlert new]; alert.messageText=@"The text does not fit without scrolling";
+        alert.informativeText=@"Enlarge the note or shorten its text before turning scrolling off.";
+        [alert addButtonWithTitle:@"OK"]; [alert runModal]; return;
+    }
+    NSAlert *alert=[NSAlert new]; alert.messageText=enabled ? @"Enable scrollable text" : @"Disable scrollable text";
+    alert.informativeText=@"Apply this to the current note, or also use it as the saved default for new notes. Other existing notes keep their setting.";
+    [alert addButtonWithTitle:@"Only this note"]; [alert addButtonWithTitle:@"This note and new notes"]; [alert addButtonWithTitle:@"Cancel"];
+    NSModalResponse response=[alert runModal];
+    if (response==NSAlertThirdButtonReturn) return;
+    NSError *error=nil;
+    if (![self flush:&error]) { JNError(error); return; }
+    NSString *previous=_record.settings[@"scroll"], *previousDefault=self.app.store.preferences[@"scroll"];
+    _record.settings[@"scroll"]=enabled ? @"1" : @"0";
+    if (response==NSAlertSecondButtonReturn) self.app.store.preferences[@"scroll"]=_record.settings[@"scroll"];
+    if (![self.app.store saveMetadata:&error]) {
+        if (previous) _record.settings[@"scroll"]=previous; else [_record.settings removeObjectForKey:@"scroll"];
+        if (previousDefault) self.app.store.preferences[@"scroll"]=previousDefault; else [self.app.store.preferences removeObjectForKey:@"scroll"];
+        JNError(error); return;
+    }
+    _scrolling=enabled;
+    [_editor scrollRangeToVisible:_editor.selectedRange];
 }
 - (void)showPalette:(id)sender {
     [_picker close]; _picker=[[JNPalette alloc] initWithNote:self];
@@ -523,6 +572,8 @@ NSRect JNConstrainFrame(NSRect frame, NSRect visible) {
     NSArray *names = @[@"Rename…",@"Tags…",@"Assign day…",@"Fold / expand",@"Save now",@"Export an RTF copy…"];
     SEL actions[] = {@selector(rename:),@selector(tags:),@selector(chooseDate:),@selector(fold:),@selector(retry:),@selector(exportCopy:)};
     for (NSUInteger i=0;i<names.count;++i) { NSMenuItem *item = [menu addItemWithTitle:names[i] action:actions[i] keyEquivalent:@""]; item.target = self; }
+    NSMenuItem *scrolling=[menu addItemWithTitle:@"Scrollable text" action:@selector(toggleScrolling:) keyEquivalent:@""];
+    scrolling.target=self; scrolling.state=_scrolling ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:NSMenuItem.separatorItem];
     NSArray *styles = @[@"Bold",@"Italic",@"Underline",@"Strikethrough"];
     for (NSUInteger i=0;i<styles.count;++i) { NSMenuItem *item = [menu addItemWithTitle:styles[i] action:@selector(format:) keyEquivalent:@""]; item.target = self; item.tag = (NSInteger)i+1; }

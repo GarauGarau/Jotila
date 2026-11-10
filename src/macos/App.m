@@ -36,11 +36,13 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     BOOL _shuffle;
     NSMenu *_tray;
     NSTimer *_trayClick;
+    BOOL _recentDirty;
 
 }
 @synthesize store=_store;
 - (NSInteger)sessionPalette { return _sessionPalette; }
 - (void)setStore:(JNStore *)store {
+    _recentDirty=NO;
     _store=store; NSString *favorite=store.preferences[@"favorite_palette"];
     NSInteger p=favorite && favorite.integerValue>=0 ? favorite.integerValue : [store.preferences[@"palette"] integerValue];
     _sessionPalette=MAX(0,MIN(PALETTE_COUNT-1,p)); _shuffle=favorite && favorite.integerValue>=0;
@@ -122,6 +124,10 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
 - (void)restore {
     for (JNRecord *record in self.store.records)
         if (!record.settings[@"open"] || [record.settings[@"open"] boolValue]) [self openRecord:record activate:NO];
+    if (!self.store.preferences[@"last_note"].length && self.notes.count) {
+        NSString *identifier=[[self.notes.allKeys sortedArrayUsingSelector:@selector(compare:)] lastObject];
+        [self rememberNote:self.notes[identifier]];
+    }
 }
 - (void)installMenu {
     NSMenu *main=[NSMenu new], *appMenu=[NSMenu new], *file=[NSMenu new], *edit=[NSMenu new], *format=[NSMenu new];
@@ -150,7 +156,7 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     _status=[NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
     _status.autosaveName=@"JotilaMenuBar"; _status.visible=YES; /* Stable menu-bar position preference. */
     _status.button.title=@""; _status.button.image=statusIcon(); _status.button.imagePosition=NSImageOnly;
-    _status.button.toolTip=@"Jotilla — new note; double-click for explorer"; [_status.button setAccessibilityLabel:@"Jotilla notes"];
+    _status.button.toolTip=@"Jotilla — last note; double-click for explorer"; [_status.button setAccessibilityLabel:@"Jotilla notes"];
     NSMenu *tray=[file copy]; [tray addItem:NSMenuItem.separatorItem]; [tray addItemWithTitle:@"Quit Jotilla" action:@selector(terminate:) keyEquivalent:@"q"]; _tray=tray;
     _status.button.target=self; _status.button.action=@selector(statusClicked:); [_status.button sendActionOn:NSEventMaskLeftMouseUp|NSEventMaskRightMouseUp];
 }
@@ -159,7 +165,7 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     if(event.type==NSEventTypeRightMouseUp || (event.modifierFlags&NSEventModifierFlagControl)) {
         [_trayClick invalidate]; [_tray popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,0) inView:_status.button];
     } else if(event.clickCount>1) { [_trayClick invalidate]; [self browse:nil]; }
-    else { [_trayClick invalidate]; __weak JNApp *weakSelf=self; _trayClick=[NSTimer scheduledTimerWithTimeInterval:NSEvent.doubleClickInterval repeats:NO block:^(NSTimer *timer) { (void)timer; [weakSelf newNote:nil]; }]; }
+    else { [_trayClick invalidate]; __weak JNApp *weakSelf=self; _trayClick=[NSTimer scheduledTimerWithTimeInterval:NSEvent.doubleClickInterval repeats:NO block:^(NSTimer *timer) { (void)timer; [weakSelf recallNote:nil]; }]; }
 }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action==@selector(toggleLogin:)) return !self.portable && [NSBundle.mainBundle.bundlePath hasPrefix:@"/Applications/"];
@@ -196,6 +202,28 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
     if(_shuffle) --_colorsLeft; else { _nextColor=(_nextColor+1)%PALETTE_SIZES[_sessionPalette]; self.store.preferences[@"next_color"]=@(_nextColor).stringValue; }
     [note showAtPointer:[sender isKindOfClass:NSString.class] activate:YES];
 }
+- (void)rememberNote:(JNNote *)note {
+    if (![self.store.preferences[@"last_note"] isEqual:note.record.identifier]) {
+        self.store.preferences[@"last_note"]=note.record.identifier;
+        _recentDirty=YES;
+    }
+}
+- (void)recallNote:(id)sender {
+    (void)sender;
+    NSString *identifier=self.store.preferences[@"last_note"];
+    JNNote *note=identifier ? self.notes[identifier] : nil;
+    if (note) {
+        if (note.collapsed) [note fold:nil];
+        [note showAtPointer:NO activate:YES]; return;
+    }
+    for (JNRecord *record in self.store.records) if ([record.identifier isEqual:identifier]) {
+        [self openRecord:record activate:YES];
+        note=self.notes[identifier];
+        if (note.collapsed) [note fold:nil];
+        return;
+    }
+    [self browse:nil];
+}
 - (void)openRecord:(JNRecord *)record activate:(BOOL)activate {
     if (!record) return;
     JNNote *note=self.notes[record.identifier];
@@ -224,6 +252,10 @@ static OSStatus hotkey(EventHandlerCallRef handler, EventRef event, void *contex
 - (void)search:(id)sender { [self browse:sender]; [_browser focusSearch]; }
 - (BOOL)flush:(NSError **)error {
     for (JNNote *note in self.notes.allValues) if (![note flush:error]) return NO;
+    if (_recentDirty) {
+        if (![self.store saveMetadata:error]) return NO;
+        _recentDirty=NO;
+    }
     return YES;
 }
 - (BOOL)switchDirectory:(NSURL *)directory {

@@ -39,7 +39,10 @@ Command+B/I/U and Command+Shift+X format selected text. Command+plus/minus
 and Command+wheel change selected font size or resize the note.
 Closing a note keeps it in the archive. Closing the explorer hides it.
 Notes need either a title or text; completely blank notes stay out of the archive.
-Use the menu bar icon to return. Quit Jotilla before moving an archive.
+Single-click the menu bar icon to recall the last used note; double-click for the explorer.
+Right-click the note bar for Scrollable text, for this note or as a saved default.
+Scroll with the wheel/trackpad or keyboard, without visible scrollbars.
+A rejected paste in a bounded note explains how to make the content fit. Quit Jotilla before moving an archive.
 
 This preview requires macOS 13 or later, Intel or Apple Silicon.
 Native Apple Silicon build, storage and UI tests are available in the repository.

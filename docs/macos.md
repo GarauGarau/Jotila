@@ -10,7 +10,7 @@ on both Apple Silicon and Intel with macOS 15 in GitHub Actions. Installed-login
 sessions, physical display changes and clean-machine installation still need
 manual release validation.
 
-[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotilla/releases/tag/macos-v0.1.2).
+[Download the universal Mac app and installer](https://github.com/GarauGarau/Jotilla/releases/tag/v1.10.0).
 
 ## Build on a Mac
 
@@ -186,7 +186,7 @@ template icon that adapts to light and dark backgrounds.
 New notes use native text layout to reject text/font growth or shrinking that
 would clip content. Already oversized imported text remains scrollable. Notes
 float across Spaces; the explorer moves to the active Space. Disconnecting a
-display keeps title bars reachable. The menu bar item creates a note on single
+display keeps title bars reachable. The menu bar item recalls the last note on single
 click, opens the archive on double-click and presents its menu on right-click.
 Start at login uses ServiceManagement and is available only for an installed app
 under `/Applications`.
@@ -199,7 +199,7 @@ in the validation report; automated tests are not a substitute for those runs.
 
 The `macos` branch is published on the public repository and tracks
 `origin/macos`. The default `windows` branch contains the Windows version. The
-`macos-v0.1.2` prerelease provides the universal portable app, PKG installer and
+`v1.10.0` release provides the universal portable app, PKG installer and
 SHA-256 checksums built from the tagged commit.
 
 Clone it directly:
@@ -228,3 +228,20 @@ git remote set-head origin -a
 git switch macos
 git pull --ff-only
 ```
+
+## Notes and menu-bar behavior in 1.10.0
+
+Single-click the menu-bar icon to recall the last used note, including an archived
+note. A folded note expands. If the note is unavailable, the explorer opens
+without creating a blank note. Double-click still opens the explorer; use the
+right-click **New note** command, Cmd+N, or the global shortcut to create a note.
+The last-note identity is saved with the session, separately for each archive.
+
+Right-click the note bar and choose **Scrollable text**. Choose **Only this note**
+or **This note and new notes** to save the default across restarts. Existing notes
+retain their own setting. Scroll using the wheel/trackpad, Page Up/Down or native
+document navigation shortcuts; no scrollbars or gutters appear. Turning scrolling
+off requires the full text to fit. With scrolling off, a rejected paste shows an
+explanation and leaves the note unchanged. Copy/cut/paste use the native pasteboard
+for interchange with other apps. The shared `scroll` settings are compatible with
+the Windows archive format.

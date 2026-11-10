@@ -10,6 +10,7 @@
 @interface JNApp (Tests)
 - (void)installMenu;
 - (void)screenChanged:(NSNotification *)notification;
+- (void)restore;
 @end
 @interface JNBrowser (Tests)
 - (void)toggleCalendar:(id)sender;
@@ -125,6 +126,89 @@ static void denseBrowserChecks(void) {
     [browser toggleCalendar:nil]; [browser toggleCalendar:nil]; pump(0.05);
     check([cards numberOfItemsInSection:0]==300 && cards.visibleItems.count>0,"dense grid returns from calendar with visible cards");
     [browser windowShouldClose:browser.window]; [NSFileManager.defaultManager removeItemAtURL:root error:NULL];
+}
+static void hiddenScrollChecks(JNNote *note) {
+    NSScrollView *scroll=note.editor.enclosingScrollView;
+    check(!scroll.hasVerticalScroller && !scroll.hasHorizontalScroller,"note never displays a scrollbar");
+    check(fabs(scroll.contentSize.width-scroll.bounds.size.width)<0.5,"hidden scrollbar reserves no gutter");
+}
+static void scrollingAndRecallChecks(void) {
+    NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    NSError *error=nil; JNApp *app=[JNApp new]; app.store=[[JNStore alloc] initWithDirectory:root error:&error];
+    check(app.store!=nil,"isolated scrolling archive");
+    [app newNote:nil]; JNNote *note=app.notes.allValues.firstObject;
+    [note.editor insertText:@"Short note" replacementRange:NSMakeRange(0,0)];
+    check([note flush:&error] && !note.scrolling,"legacy default remains bounded");
+    NSString *identifier=note.record.identifier;
+    NSMutableString *longText=[NSMutableString string];
+    for (NSUInteger i=0;i<160;++i) [longText appendFormat:@"Line %lu — Caffè 🌿\n",(unsigned long)i];
+    NSPasteboard *clipboard=[NSPasteboard pasteboardWithUniqueName];
+    [clipboard setString:longText forType:NSPasteboardTypeString];
+    note.editor.selectedRange=NSMakeRange(0,note.editor.string.length);
+    answerAlert(@"OK",nil); [note.editor readSelectionFromPasteboard:clipboard type:NSPasteboardTypeString];
+    check([note.editor.string isEqual:@"Short note"],"rejected paste explains overflow and preserves text");
+    answerAlert(@"Cancel",nil); [note toggleScrolling:nil]; check(!note.scrolling,"scrolling scope can be cancelled");
+    answerAlert(@"Only this note",nil); [note toggleScrolling:nil];
+    check(note.scrolling && ![app.store.preferences[@"scroll"] boolValue],"per-note scrolling leaves default unchanged");
+    [app newNote:nil]; JNNote *other=nil;
+    for(JNNote *candidate in app.notes.allValues) if(candidate!=note) other=candidate;
+    check(other && !other.scrolling,"other notes retain bounded mode");
+    answerAlert(@"Only this note",nil); [note toggleScrolling:nil];
+    check(!note.scrolling,"short text can return to bounded mode");
+    answerAlert(@"This note and new notes",nil); [note toggleScrolling:nil];
+    check(note.scrolling && [app.store.preferences[@"scroll"] boolValue] && !other.scrolling,"saved default does not alter existing notes");
+    note.editor.selectedRange=NSMakeRange(0,note.editor.string.length);
+    [note.editor readSelectionFromPasteboard:clipboard type:NSPasteboardTypeString];
+    check([note.editor.string isEqual:longText],"scrollable notes accept complete long paste");
+    check([note resizeTo:NSMakeSize(240,180)],"scrollable note can shrink without clipping its document");
+    hiddenScrollChecks(note);
+    [note.editor moveToBeginningOfDocument:nil]; [note.editor scrollRangeToVisible:note.editor.selectedRange];
+    NSScrollView *scroll=note.editor.enclosingScrollView;
+    CGFloat top=scroll.contentView.bounds.origin.y;
+    CGEventRef wheel=CGEventCreateScrollWheelEvent(NULL,kCGScrollEventUnitLine,1,-5);
+    [note.editor scrollWheel:[NSEvent eventWithCGEvent:wheel]]; CFRelease(wheel); pump(0.1);
+    check(scroll.contentView.bounds.origin.y>top,"native wheel scrolls with no visible scrollbar");
+    [note.editor moveToEndOfDocument:nil]; [note.editor scrollRangeToVisible:note.editor.selectedRange];
+    check(scroll.contentView.bounds.origin.y>top,"native end navigation reveals the end");
+    [note.editor moveToBeginningOfDocument:nil]; [note.editor scrollRangeToVisible:note.editor.selectedRange];
+    check(scroll.contentView.bounds.origin.y<1,"native home navigation returns to the top");
+    [note.editor pageDown:nil]; check(scroll.contentView.bounds.origin.y>top,"Page Down scrolls the native document");
+    [note.editor pageUp:nil]; hiddenScrollChecks(note);
+    answerAlert(@"OK",nil); [note toggleScrolling:nil]; check(note.scrolling,"overflow blocks disabling scrolling without losing text");
+    [note fold:nil]; [note fold:nil]; hiddenScrollChecks(note);
+    [note showAtPointer:NO activate:YES];
+    check([app flush:&error],"save recent identity, long note and scrolling default");
+    [note close]; pump(0.1); check(!app.notes[identifier],"close recent note into archive");
+    app.store.preferences[@"last_note"]=identifier;
+    [app recallNote:nil]; note=app.notes[identifier];
+    check(note && note.window.visible && note.scrolling && [note.editor.string isEqual:longText],"recall reopens same archived long note");
+    [other detach]; [app.notes removeObjectForKey:other.record.identifier];
+    [note showAtPointer:NO activate:YES]; check([app flush:&error],"persist recent note before reload");
+    [note detach]; [app.notes removeAllObjects];
+    check([app.store reload:&error],"read settings back from disk");
+    [app restore]; note=app.notes[identifier];
+    check(note.scrolling && [app.store.preferences[@"scroll"] boolValue] && [app.store.preferences[@"last_note"] isEqual:identifier],
+          "restoration preserves per-note mode, default and last-note identity");
+    hiddenScrollChecks(note);
+    [app newNote:nil]; JNNote *fresh=nil;
+    for(JNNote *candidate in app.notes.allValues) if(candidate!=note) fresh=candidate;
+    check(fresh.scrolling,"new note inherits reloaded default");
+    [note showAtPointer:NO activate:YES]; [note fold:nil]; [note.window orderOut:nil];
+    NSUInteger count=app.notes.count; [app installMenu];
+    NSStatusItem *status=[app valueForKey:@"status"]; [status.button performClick:nil];
+    check(!note.window.visible,"single status click waits for double-click interval");
+    pump(NSEvent.doubleClickInterval+0.1);
+    check(note.window.visible && !note.collapsed && app.notes.count==count,"single status click recalls and unfolds without creating a note");
+    [note.window orderOut:nil]; pump(NSEvent.doubleClickInterval+0.1);
+    check(!note.window.visible,"status click timer does not repeat");
+    [note detach]; [app.notes removeObjectForKey:identifier];
+    check([app.store remove:note.record error:&error],"delete recent note fixture");
+    app.store.preferences[@"last_note"]=identifier; [app recallNote:nil];
+    JNBrowser *browser=[app valueForKey:@"browser"];
+    check(browser.window.visible && !app.notes[identifier],"missing recent note opens explorer without recreating it");
+    for(JNNote *n in app.notes.allValues) [n detach];
+    [browser.window orderOut:nil]; [clipboard releaseGlobally];
+    [NSFileManager.defaultManager removeItemAtURL:root error:NULL];
 }
 static void profile(void) {
     NSURL *root=[[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
@@ -340,6 +424,7 @@ int main(void) { @autoreleasepool {
     [browser.window orderOut:nil];
     [NSFileManager.defaultManager removeItemAtURL:root error:NULL];
     denseBrowserChecks();
+    scrollingAndRecallChecks();
     if(getenv("JOTILLA_PROFILE")) profile();
     printf("PASS: %u native UI checks.\n",checks);
 } return 0; }
