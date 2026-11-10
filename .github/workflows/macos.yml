@@ -23,6 +23,13 @@ jobs:
         run: make ui-test smoke-test
       - name: Analyze Objective-C sources
         run: make analyze
+      - name: Save native UI snapshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Jotilla-macos-ui-${{ matrix.runner }}
+          path: build/macos/ui-snapshots/*
+          if-no-files-found: warn
       - name: Build universal installer and portable download
         if: matrix.runner == 'macos-15'
         run: make package

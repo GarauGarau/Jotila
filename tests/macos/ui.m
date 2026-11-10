@@ -172,8 +172,10 @@ static void scrollingAndRecallChecks(void) {
     check(scroll.contentView.bounds.origin.y>top,"native end navigation reveals the end");
     [note.editor moveToBeginningOfDocument:nil]; [note.editor scrollRangeToVisible:note.editor.selectedRange];
     check(scroll.contentView.bounds.origin.y<1,"native home navigation returns to the top");
-    [note.editor pageDown:nil]; check(scroll.contentView.bounds.origin.y>top,"Page Down scrolls the native document");
-    [note.editor pageUp:nil]; hiddenScrollChecks(note);
+    [note.editor keyDown:key(note.window,[NSString stringWithFormat:@"%C",(unichar)NSPageDownFunctionKey],121,NSEventModifierFlagFunction)]; pump(0.2);
+    check(scroll.contentView.bounds.origin.y>top,"Page Down scrolls the native document");
+    [note.editor keyDown:key(note.window,[NSString stringWithFormat:@"%C",(unichar)NSPageUpFunctionKey],116,NSEventModifierFlagFunction)]; pump(0.2);
+    hiddenScrollChecks(note); capture(note.window.contentView,@"scrolling-no-bars.png");
     answerAlert(@"OK",nil); [note toggleScrolling:nil]; check(note.scrolling,"overflow blocks disabling scrolling without losing text");
     [note fold:nil]; [note fold:nil]; hiddenScrollChecks(note);
     [note showAtPointer:NO activate:YES];
