@@ -1,0 +1,23 @@
+app-id: org.jotilla.Jotilla
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: jotilla
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --filesystem=home
+modules:
+  - name: jotilla
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: dir
+        path: ../..
+    post-install:
+      - install -Dm644 packaging/jotilla.desktop /app/share/applications/jotilla.desktop
+      - install -Dm644 packaging/jotilla.svg /app/share/icons/hicolor/scalable/apps/jotilla.svg
+      - install -Dm644 packaging/org.jotilla.Jotilla.metainfo.xml /app/share/metainfo/org.jotilla.Jotilla.metainfo.xml

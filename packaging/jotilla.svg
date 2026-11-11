@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Jotilla</title>
+  <defs>
+    <linearGradient id="note" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe97a"/>
+      <stop offset="1" stop-color="#f5cf3a"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d9b52b"/>
+      <stop offset="1" stop-color="#c49f1d"/>
+    </linearGradient>
+  </defs>
+  <rect x="14" y="12" width="100" height="100" rx="12" ry="12" fill="url(#note)"/>
+  <path d="M86 112 L114 84 L114 100 A12 12 0 0 1 102 112 Z" fill="url(#fold)"/>
+  <path d="M86 112 L114 84 L86 84 Z" fill="#fff2b0" opacity="0.75"/>
+  <text x="60" y="84" font-family="Georgia, 'DejaVu Serif', serif" font-size="64"
+        font-style="italic" text-anchor="middle" fill="#4a3b00">ι</text>
+</svg>

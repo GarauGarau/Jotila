@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.jotilla.Jotilla</id>
+  <name>Jotilla</name>
+  <summary>Sticky notes on silicon</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <launchable type="desktop-id">jotilla.desktop</launchable>
+  <description>
+    <p>
+      Jotilla is a lightweight native sticky-notes application. It keeps notes in
+      plain UTF-8 text files with INI metadata, so your data stays readable and
+      portable without a database.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Autosaving sticky notes with rich text formatting</li>
+      <li>Archive browser with search, tags and calendar filtering</li>
+      <li>Custom colour palettes and opacity control</li>
+      <li>Always-on-top notes on X11 and XWayland</li>
+      <li>File-based storage with no bundled runtime</li>
+    </ul>
+  </description>
+  <categories>
+    <category>Utility</category>
+    <category>TextEditor</category>
+    <category>Office</category>
+  </categories>
+  <url type="homepage">https://github.com/jotilla/jotilla</url>
+  <url type="bugtracker">https://github.com/jotilla/jotilla/issues</url>
+  <developer id="org.jotilla">
+    <name>Jotilla contributors</name>
+  </developer>
+  <releases>
+    <release version="1.10.0" date="2026-11-10">
+      <description>
+        <p>Parity with Jotilla 1.10.0: per-note and default scrollable text with hidden scrollbars, paste overflow notices, tray recall of the last note, and the shared Windows/macOS archive format.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

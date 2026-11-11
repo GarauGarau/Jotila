@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Jotilla
+Comment=Sticky notes on silicon
+Exec=jotilla %U
+Icon=jotilla
+Terminal=false
+Categories=Utility;TextEditor;Office;
+StartupWMClass=Jotilla
+Keywords=notes;sticky;checklist;
